@@ -256,24 +256,25 @@ def main() -> int:
         print(f"[sim] listening on {args.host}:{args.port}")
         print("[sim] stop with Ctrl+C")
 
-        stop_event = threading.Event()
-
         def _signal_handler(signum, frame):  # type: ignore[no-untyped-def]
             del signum, frame
-            stop_event.set()
-            server.shutdown()
+            # shutdown() must not be called from the same thread as serve_forever().
+            threading.Thread(target=server.shutdown, daemon=True).start()
 
         signal.signal(signal.SIGINT, _signal_handler)
         signal.signal(signal.SIGTERM, _signal_handler)
 
         try:
             server.serve_forever(poll_interval=0.3)
+        except KeyboardInterrupt:
+            pass
         finally:
             server.server_close()
 
     print("[sim] simulator stopped")
     return 0
 
+# sudo python3 acutrol_rate_table_simulator.py --host 192.168.53.1 --port 23
 
 if __name__ == "__main__":
     raise SystemExit(main())

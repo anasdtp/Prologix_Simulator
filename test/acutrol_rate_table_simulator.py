@@ -32,6 +32,15 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 
+_PRINT_LOCK = threading.Lock()
+
+
+def _log(message: str) -> None:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    with _PRINT_LOCK:
+        print(f"[{ts}] {message}")
+
+
 @dataclass
 class AxisState:
     mode: str = "OFF"
@@ -68,6 +77,7 @@ class AcutrolSimulatorState:
         upper = command.upper()
 
         if upper == "*IDN?":
+            _log("[sim] CMD *IDN?")
             return "ACUTRONIC,ACUTROL3000-SIM,0000000000,SIM-1.0"
 
         if not upper.startswith(":"):
@@ -87,6 +97,7 @@ class AcutrolSimulatorState:
         if command_group == "MODE":
             axis = self._parse_axis(args)
             if axis is None:
+                _log(f"[sim] WARN invalid MODE axis args={args!r}")
                 return None
             if sub in ("RATE", "POSITION", "OFF"):
                 with self._lock:
@@ -94,33 +105,43 @@ class AcutrolSimulatorState:
                     self._axes[axis].mode = sub
                     if sub == "OFF":
                         self._axes[axis].rate_deg_s = 0.0
+                _log(f"[sim] MODE axis={axis} -> {sub}")
             return None
 
         if command_group == "DEMAND":
             parsed = self._parse_axis_value(args)
             if parsed is None:
+                _log(f"[sim] WARN invalid DEMAND args={args!r}")
                 return None
             axis, value = parsed
             with self._lock:
                 self._advance_axis(axis)
                 if sub == "RATE":
                     self._axes[axis].rate_deg_s = value
+                    _log(f"[sim] DEMAND RATE axis={axis} value={value:.6f}")
                 elif sub == "POSITION":
                     self._axes[axis].pos_deg = self._wrap_360(value)
+                    _log(f"[sim] DEMAND POSITION axis={axis} value={self._axes[axis].pos_deg:.6f}")
             return None
 
         if command_group == "READ":
             axis = self._parse_axis(args)
             if axis is None:
+                _log(f"[sim] WARN invalid READ axis args={args!r}")
                 return None
             with self._lock:
                 self._advance_axis(axis)
                 if sub == "RATE":
-                    return f"{self._axes[axis].rate_deg_s:.6f}"
+                    value = f"{self._axes[axis].rate_deg_s:.6f}"
+                    _log(f"[sim] READ RATE axis={axis} -> {value}")
+                    return value
                 if sub == "POSITION":
-                    return f"{self._axes[axis].pos_deg:.6f}"
+                    value = f"{self._axes[axis].pos_deg:.6f}"
+                    _log(f"[sim] READ POSITION axis={axis} -> {value}")
+                    return value
             return None
 
+        _log(f"[sim] WARN unsupported command: {command}")
         return None
 
     @staticmethod
@@ -199,7 +220,7 @@ class _RequestHandler(socketserver.BaseRequestHandler):
 
     def handle(self) -> None:
         peer = f"{self.client_address[0]}:{self.client_address[1]}"
-        print(f"[sim] client connected: {peer}")
+        _log(f"[sim] client connected: {peer}")
 
         buffer = b""
         while True:
@@ -219,14 +240,19 @@ class _RequestHandler(socketserver.BaseRequestHandler):
                 if not text:
                     continue
 
+                _log(f"[sim] RX {peer} << {text}")
+
                 response = self.state.handle_message(text)
                 if response is not None:
                     try:
+                        _log(f"[sim] TX {peer} >> {response.rstrip()}")
                         self.request.sendall(response.encode("ascii", errors="ignore"))
                     except OSError:
                         break
+                else:
+                    _log(f"[sim] TX {peer} >> <no-response>")
 
-        print(f"[sim] client disconnected: {peer}")
+        _log(f"[sim] client disconnected: {peer}")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -252,9 +278,9 @@ def main() -> int:
     _RequestHandler.state = state
 
     with _ThreadingTCPServer((args.host, args.port), _RequestHandler) as server:
-        print("[sim] ACUTROL simulator ready")
-        print(f"[sim] listening on {args.host}:{args.port}")
-        print("[sim] stop with Ctrl+C")
+        _log("[sim] ACUTROL simulator ready")
+        _log(f"[sim] listening on {args.host}:{args.port}")
+        _log("[sim] stop with Ctrl+C")
 
         def _signal_handler(signum, frame):  # type: ignore[no-untyped-def]
             del signum, frame
@@ -271,7 +297,7 @@ def main() -> int:
         finally:
             server.server_close()
 
-    print("[sim] simulator stopped")
+    _log("[sim] simulator stopped")
     return 0
 
 # sudo python3 acutrol_rate_table_simulator.py --host 192.168.53.1 --port 23
